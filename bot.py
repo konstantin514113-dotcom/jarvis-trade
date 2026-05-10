@@ -10,7 +10,7 @@ OKX_PASS     = os.environ["OKX_PASSPHRASE"]
 ANT_KEY      = os.environ["ANTHROPIC_API_KEY"]
 IS_DEMO      = os.environ.get("OKX_DEMO", "true").lower() == "true"
 RISK_PCT     = float(os.environ.get("RISK_PCT", "1.0"))
-INTERVAL_MIN = int(os.environ.get("INTERVAL_MIN", "60"))
+INTERVAL_MIN = int(os.environ.get("INTERVAL_MIN", "15"))
 TAKE_USD     = float(os.environ.get("TAKE_USD", "5.0"))
 STOP_USD     = float(os.environ.get("STOP_USD", "1.0"))
 MONITOR_SEC  = int(os.environ.get("MONITOR_SEC", "10"))
@@ -55,7 +55,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background:#080b0f; color:#c9d1d9; font-family:'JetBrains Mono',monospace; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:32px 16px; gap:24px; }
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
-@keyframes pop{0%{transform:scale(1)}40%{transform:scale(1.05)}100%{transform:scale(1)}}
 .title{font-family:'Syne',sans-serif;font-size:22px;font-weight:800;color:#fff;letter-spacing:3px;text-align:center}
 .subtitle{font-size:10px;color:#1e2e3a;letter-spacing:2px;text-align:center}
 .balance{font-size:12px;color:#37474f}
@@ -78,12 +77,6 @@ body { background:#080b0f; color:#c9d1d9; font-family:'JetBrains Mono',monospace
 .live-dot{width:6px;height:6px;border-radius:50%;display:inline-block;animation:pulse 1.5s infinite;margin-right:6px}
 .live-row{display:flex;align-items:center;font-size:10px;letter-spacing:2px}
 .error{font-size:11px;color:#ef9a9a;text-align:center}
-.history-box{width:100%;max-width:300px;background:#0d1117;border:1px solid #161b22;border-radius:12px;overflow:hidden}
-.history-header{padding:8px 16px;border-bottom:1px solid #161b22;font-size:10px;color:#30363d;letter-spacing:2px}
-.history-list{max-height:150px;overflow-y:auto}
-.history-item{display:flex;justify-content:space-between;align-items:center;padding:7px 16px;border-bottom:1px solid #0d1117;font-size:11px}
-.history-ts{color:#30363d}
-.history-amt{color:#00e676;font-weight:700}
 </style>
 </head>
 <body>
@@ -101,11 +94,7 @@ body { background:#080b0f; color:#c9d1d9; font-family:'JetBrains Mono',monospace
 <div class="saved-box" id="saved-box" style="background:#0d1a10;border:1px solid #00e67622">
   <div class="saved-label" style="color:#1e4a2a">ОТЛОЖЕНО</div>
   <div class="saved-value" id="saved-value" style="color:#ffea00;text-shadow:0 0 20px #ffea0033">$0.00</div>
-  <div class="saved-count" id="saved-count" style="color:#3a4a1a">0 фиксаций × $5</div>
-</div>
-<div id="history-box" class="history-box" style="display:none">
-  <div class="history-header">ИСТОРИЯ ФИКСАЦИЙ</div>
-  <div class="history-list" id="history-list"></div>
+  <div class="saved-count" id="saved-count" style="color:#3a4a1a">0 фиксаций x $5</div>
 </div>
 <div id="signal-box" class="signal-box" style="display:none">
   <div class="signal-label">ПОСЛЕДНИЙ СИГНАЛ</div>
@@ -125,8 +114,6 @@ body { background:#080b0f; color:#c9d1d9; font-family:'JetBrains Mono',monospace
 const API='/pnl';
 const TAKE_AT=5;
 let prevPnl=0;
-let history=[];
-
 async function fetchData(){
   try{
     const res=await fetch(API);
@@ -141,7 +128,7 @@ async function fetchData(){
     pnlEl.style.textShadow=up?'0 0 40px #00e67633':'0 0 40px #ff174433';
     const positions=d.positions||[];
     document.getElementById('pos-label').textContent=positions.length>0?'ОТКРЫТО: '+positions.length:'НЕТ ПОЗИЦИЙ';
-    document.getElementById('pnl-sub').textContent=positions.length>0?(up?'▲ В ПЛЮСЕ':'▼ В МИНУСЕ'):'ОЖИДАНИЕ СИГНАЛА';
+    document.getElementById('pnl-sub').textContent=positions.length>0?(up?'В ПЛЮСЕ':'В МИНУСЕ'):'ОЖИДАНИЕ СИГНАЛА';
     document.getElementById('pnl-sub').style.color=up?'#00e67655':'#ff174455';
     const posContainer=document.getElementById('positions-container');
     posContainer.innerHTML='';
@@ -150,13 +137,13 @@ async function fetchData(){
       const card=document.createElement('div');
       card.className='position-card';
       card.style.border='1px solid '+(pup?'#00e67622':'#ff174422');
-      card.innerHTML='<div><div class="pos-symbol">'+p.symbol+'</div><div class="pos-side" style="color:'+(p.side==='long'?'#00e676':'#ff1744')+'">'+((p.side||'').toUpperCase())+' · '+Math.abs(parseFloat(p.size||0))+' контр.</div></div><div class="pos-pnl" style="color:'+(pup?'#00e676':'#ff1744')+'">'+(pup?'+':'')+'$'+p.pnl.toFixed(2)+'</div>';
+      card.innerHTML='<div><div class="pos-symbol">'+p.symbol+'</div><div class="pos-side" style="color:'+(p.side==='long'?'#00e676':'#ff1744')+'">'+((p.side||'').toUpperCase())+' · '+Math.abs(parseFloat(p.size||0))+' kontr.</div></div><div class="pos-pnl" style="color:'+(pup?'#00e676':'#ff1744')+'">'+(pup?'+':'')+'$'+p.pnl.toFixed(2)+'</div>';
       posContainer.appendChild(card);
     });
     const totalTaken=d.total_taken||0;
     const takeCount=d.take_count||0;
     document.getElementById('saved-value').textContent='$'+totalTaken.toFixed(2);
-    document.getElementById('saved-count').textContent=takeCount+' фиксаций × $'+(d.take_usd||5);
+    document.getElementById('saved-count').textContent=takeCount+' фиксаций x $'+(d.take_usd||5);
     if(pnl>=TAKE_AT&&prevPnl<TAKE_AT){
       const box=document.getElementById('saved-box');
       box.style.background='#ffea0011';
@@ -264,11 +251,17 @@ def build_market(symbol):
     return "\n".join(lines)
 
 def get_balance():
-    data = okx_get("/api/v5/account/balance?ccy=USDT")
-    for d in data.get("data", [{}])[0].get("details", []):
-        if d.get("ccy") == "USDT":
-            return float(d.get("availEq", 0))
-    return 0.0
+    data = okx_get("/api/v5/account/balance")
+    try:
+        details = data.get("data", [{}])[0].get("details", [])
+        for d in details:
+            if d.get("ccy") == "USDT":
+                val = d.get("availEq") or d.get("cashBal") or d.get("eq") or "0"
+                return float(val)
+        total = data.get("data", [{}])[0].get("totalEq", "0")
+        return float(total)
+    except:
+        return 0.0
 
 def get_position(symbol):
     data = okx_get(f"/api/v5/account/positions?instType=SWAP&instId={symbol}")
