@@ -9,9 +9,7 @@ from anthropic import Anthropic
 from flask import Flask, jsonify
 from flask_cors import CORS
 
-# ─────────────────────────────────────────
 # CONFIG
-# ─────────────────────────────────────────
 OKX_API_KEY     = os.environ["OKX_API_KEY"]
 OKX_SECRET_KEY  = os.environ["OKX_SECRET_KEY"]
 OKX_PASSPHRASE  = os.environ["OKX_PASSPHRASE"]
@@ -31,11 +29,10 @@ DEMO_HDR    = {"x-simulated-trading": "1"} if IS_DEMO else {}
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler("jarvis.log")]
+    handlers=[logging.StreamHandler()]
 )
 log = logging.getLogger("JARVIS")
 
-# Shared state for dashboard
 state = {
     "balance": 0.0,
     "total_pnl": 0.0,
@@ -46,21 +43,15 @@ state = {
     "last_update": None,
 }
 
-# ─────────────────────────────────────────
-# SYSTEM PROMPT
-# ─────────────────────────────────────────
-SYSTEM_PROMPT = """Ты — институциональный крипто-трейдинг аналитик для OKX.
-Ищи только высоковероятностные intraday сделки BTC/USDT и ETH/USDT.
-Принцип: лучше 10 раз NO TRADE, чем один слабый сигнал.
-Анализируй: market structure (BOS/CHoCH/HH/HL), liquidity sweep, order blocks, FVG,
+SYSTEM_PROMPT = """Ty — institucionalnyj krypto-vejding analitik dlja OKX.
+Ishi tolko vysokoverojatnostnye intraday sdelki BTC/USDT i ETH/USDT.
+Princip: luchshe 10 raz NO TRADE, chem odin slabyjsignal.
+Analiziruj: market structure (BOS/CHoCH/HH/HL), liquidity sweep, order blocks, FVG,
 volume delta, CVD, OI, funding rate, long/short ratio, ATR, volatility regime.
-Сигнал ТОЛЬКО если все факторы совпали: тренд + объём + ликвидность + price action + RR >= 1:2.
-Отвечай ТОЛЬКО валидным JSON без markdown:
-{"decision":"LONG"|"SHORT"|"NO TRADE","symbol":"BTC-USDT-SWAP"|"ETH-USDT-SWAP"|null,"entry_zone":число|null,"stop_loss":число|null,"take_profit_1":число|null,"leverage":3,"confidence":"LOW"|"MEDIUM"|"HIGH","reason":"текст","final_verdict":"ENTER"|"WAIT"|"NO TRADE"}"""
+Signal TOLKO esli vse faktory sovpali: trend + obem + likvidnost + price action + RR >= 1:2.
+Otvechaj TOLKO validnym JSON bez markdown:
+{"decision":"LONG"|"SHORT"|"NO TRADE","symbol":"BTC-USDT-SWAP"|"ETH-USDT-SWAP"|null,"entry_zone":chislo|null,"stop_loss":chislo|null,"take_profit_1":chislo|null,"leverage":3,"confidence":"LOW"|"MEDIUM"|"HIGH","reason":"tekst","final_verdict":"ENTER"|"WAIT"|"NO TRADE"}"""
 
-# ─────────────────────────────────────────
-# OKX AUTH
-# ─────────────────────────────────────────
 def sign(ts, method, path, body=""):
     msg = ts + method.upper() + path + body
     mac = hmac.new(OKX_SECRET_KEY.encode(), msg.encode(), hashlib.sha256)
@@ -87,9 +78,6 @@ def okx_post(path, body):
     r = requests.post(BASE_URL + path, headers=headers("POST", path, b), data=b, timeout=10)
     return r.json()
 
-# ─────────────────────────────────────────
-# MARKET DATA
-# ─────────────────────────────────────────
 def candles(symbol, bar="1H", limit=24):
     r = requests.get(f"{BASE_URL}/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}", timeout=10)
     data = r.json().get("data", [])
@@ -137,9 +125,6 @@ def build_market_data(symbol):
     except: pass
     return "\n".join(lines)
 
-# ─────────────────────────────────────────
-# ACCOUNT
-# ─────────────────────────────────────────
 def get_balance():
     data = okx_get("/api/v5/account/balance?ccy=USDT")
     for d in data.get("data", [{}])[0].get("details", []):
@@ -165,9 +150,6 @@ def close_position(symbol, pos):
     log.info(f"Close result: {result}")
     return result.get("code") == "0"
 
-# ─────────────────────────────────────────
-# PLACE ORDER
-# ─────────────────────────────────────────
 def place_order(signal, balance):
     symbol   = signal.get("symbol")
     decision = signal.get("decision")
@@ -191,18 +173,14 @@ def place_order(signal, balance):
     log.info(f"Order result: {result}")
     return result.get("code") == "0"
 
-# ─────────────────────────────────────────
-# PNL MONITOR
-# ─────────────────────────────────────────
 def pnl_monitor():
-    log.info(f"💹 Monitor: TP=+${TAKE_USD} SL=-${STOP_USD} every {MONITOR_SEC}s")
+    log.info(f"PnL monitor started | TP=+${TAKE_USD} | SL=-${STOP_USD} | every {MONITOR_SEC}s")
     while True:
         try:
             balance = get_balance()
             state["balance"] = balance
             positions_list = []
             total_pnl = 0.0
-
             for symbol in SYMBOLS:
                 pos = get_position(symbol)
                 if not pos:
@@ -216,28 +194,22 @@ def pnl_monitor():
                     "pnl": round(pnl, 2),
                     "entry": pos.get("avgPx"),
                 })
-                log.info(f"📊 {symbol} PnL: ${pnl:+.2f}")
-
+                log.info(f"{symbol} PnL: ${pnl:+.2f}")
                 if pnl >= TAKE_USD:
-                    log.info(f"💰 TAKE PROFIT ${pnl:.2f} — closing")
+                    log.info(f"TAKE PROFIT ${pnl:.2f} closing")
                     if close_position(symbol, pos):
                         state["total_taken"] = round(state["total_taken"] + pnl, 2)
                         state["take_count"] += 1
                 elif pnl <= -STOP_USD:
-                    log.info(f"🛑 STOP LOSS ${pnl:.2f} — closing")
+                    log.info(f"STOP LOSS ${pnl:.2f} closing")
                     close_position(symbol, pos)
-
             state["positions"] = positions_list
             state["total_pnl"] = round(total_pnl, 2)
             state["last_update"] = datetime.utcnow().strftime("%H:%M:%S UTC")
-
         except Exception as e:
             log.error(f"Monitor error: {e}")
         time.sleep(MONITOR_SEC)
 
-# ─────────────────────────────────────────
-# CLAUDE ANALYSIS
-# ─────────────────────────────────────────
 def analyze(market_data):
     client = Anthropic(api_key=ANTHROPIC_KEY)
     msg = client.messages.create(
@@ -249,51 +221,45 @@ def analyze(market_data):
     text = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
-# ─────────────────────────────────────────
-# TRADE LOOP
-# ─────────────────────────────────────────
 def trade_loop():
-    log.info(f"🤖 Trade loop | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
+    log.info(f"Trade loop started | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
     time.sleep(15)
     while True:
         try:
-            log.info("=" * 60)
-            log.info(f"⏱  Cycle: {datetime.utcnow().strftime('%H:%M UTC')}")
+            log.info("=" * 40)
+            log.info(f"Cycle: {datetime.utcnow().strftime('%H:%M UTC')}")
             balance = get_balance()
-            log.info(f"💰 Balance: ${balance:,.2f} USDT")
+            log.info(f"Balance: ${balance:,.2f} USDT")
             if balance < 10:
                 log.warning("Balance < $10, skipping")
             else:
                 market_block = ""
                 for symbol in SYMBOLS:
                     if get_position(symbol):
-                        log.info(f"📊 Position open for {symbol}, monitor handles it")
+                        log.info(f"Position open for {symbol}, monitor handles it")
                         continue
                     market_block += build_market_data(symbol) + "\n\n"
                 if market_block.strip():
-                    log.info("🧠 Analyzing with Claude...")
+                    log.info("Analyzing with Claude...")
                     signal = analyze(market_block)
                     state["last_signal"] = signal
-                    log.info(f"📡 {signal.get('decision')} | {signal.get('final_verdict')} | {signal.get('reason','')}")
+                    log.info(f"{signal.get('decision')} | {signal.get('final_verdict')} | {signal.get('reason','')}")
                     if signal.get("final_verdict") == "ENTER" and signal.get("decision") in ("LONG", "SHORT"):
-                        log.info(f"✅ Placing {signal['decision']} on {signal.get('symbol')}")
+                        log.info(f"Placing {signal['decision']} on {signal.get('symbol')}")
                         place_order(signal, balance)
                     else:
-                        log.info(f"⏸  {signal.get('final_verdict')} — skipping")
+                        log.info(f"{signal.get('final_verdict')} - skipping")
         except Exception as e:
-            log.error(f"❌ {e}", exc_info=True)
-        log.info(f"💤 Next analysis in {INTERVAL_MIN} min")
+            log.error(f"Error: {e}", exc_info=True)
+        log.info(f"Next analysis in {INTERVAL_MIN} min")
         time.sleep(INTERVAL_MIN * 60)
 
-# ─────────────────────────────────────────
-# FLASK API FOR DASHBOARD
-# ─────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
 
 @app.route("/")
 def index():
-    return "JARVIS TRADE BOT is running 🤖"
+    return "JARVIS TRADE BOT is running"
 
 @app.route("/pnl")
 def pnl_endpoint():
@@ -310,12 +276,9 @@ def pnl_endpoint():
         "stop_usd": STOP_USD,
     })
 
-# ─────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────
 if __name__ == "__main__":
     threading.Thread(target=pnl_monitor, daemon=True).start()
     threading.Thread(target=trade_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
-    log.info(f"🌐 API running on port {port}")
+    log.info(f"API running on port {port}")
     app.run(host="0.0.0.0", port=port)
