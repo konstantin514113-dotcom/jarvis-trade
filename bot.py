@@ -1,14 +1,16 @@
 """
 JARVIS TRADE BOT — Autonomous crypto trading agent for OKX
-Dollar-based Take Profit: closes position when PnL reaches target $
+Dollar-based Take Profit + Flask API for dashboard
 """
 
 import os, time, hmac, hashlib, base64, json, logging, requests, threading
 from datetime import datetime, timezone
 from anthropic import Anthropic
+from flask import Flask, jsonify
+from flask_cors import CORS
 
 # ─────────────────────────────────────────
-# CONFIG — set in Railway environment variables
+# CONFIG
 # ─────────────────────────────────────────
 OKX_API_KEY     = os.environ["OKX_API_KEY"]
 OKX_SECRET_KEY  = os.environ["OKX_SECRET_KEY"]
@@ -18,9 +20,9 @@ ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
 IS_DEMO         = os.environ.get("OKX_DEMO", "true").lower() == "true"
 RISK_PCT        = float(os.environ.get("RISK_PCT", "1.0"))
 INTERVAL_MIN    = int(os.environ.get("INTERVAL_MIN", "60"))
-TAKE_USD        = float(os.environ.get("TAKE_USD", "5.0"))    # 💰 фиксируем прибыль при +$5
-STOP_USD        = float(os.environ.get("STOP_USD", "1.0"))   # 🛑 закрываем убыток при -$10
-MONITOR_SEC     = int(os.environ.get("MONITOR_SEC", "10"))    # как часто проверять PnL (сек)
+TAKE_USD        = float(os.environ.get("TAKE_USD", "5.0"))
+STOP_USD        = float(os.environ.get("STOP_USD", "1.0"))
+MONITOR_SEC     = int(os.environ.get("MONITOR_SEC", "10"))
 SYMBOLS         = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
 
 BASE_URL    = "https://www.okx.com"
@@ -33,30 +35,28 @@ logging.basicConfig(
 )
 log = logging.getLogger("JARVIS")
 
+# Shared state for dashboard
+state = {
+    "balance": 0.0,
+    "total_pnl": 0.0,
+    "positions": [],
+    "total_taken": 0.0,
+    "take_count": 0,
+    "last_signal": None,
+    "last_update": None,
+}
+
 # ─────────────────────────────────────────
 # SYSTEM PROMPT
 # ─────────────────────────────────────────
 SYSTEM_PROMPT = """Ты — институциональный крипто-трейдинг аналитик для OKX.
 Ищи только высоковероятностные intraday сделки BTC/USDT и ETH/USDT.
 Принцип: лучше 10 раз NO TRADE, чем один слабый сигнал.
-
 Анализируй: market structure (BOS/CHoCH/HH/HL), liquidity sweep, order blocks, FVG,
 volume delta, CVD, OI, funding rate, long/short ratio, ATR, volatility regime.
-
 Сигнал ТОЛЬКО если все факторы совпали: тренд + объём + ликвидность + price action + RR >= 1:2.
-
 Отвечай ТОЛЬКО валидным JSON без markdown:
-{
-  "decision": "LONG" | "SHORT" | "NO TRADE",
-  "symbol": "BTC-USDT-SWAP" | "ETH-USDT-SWAP" | null,
-  "entry_zone": число или null,
-  "stop_loss": число или null,
-  "take_profit_1": число или null,
-  "leverage": 3,
-  "confidence": "LOW" | "MEDIUM" | "HIGH",
-  "reason": "обоснование на русском",
-  "final_verdict": "ENTER" | "WAIT" | "NO TRADE"
-}"""
+{"decision":"LONG"|"SHORT"|"NO TRADE","symbol":"BTC-USDT-SWAP"|"ETH-USDT-SWAP"|null,"entry_zone":число|null,"stop_loss":число|null,"take_profit_1":число|null,"leverage":3,"confidence":"LOW"|"MEDIUM"|"HIGH","reason":"текст","final_verdict":"ENTER"|"WAIT"|"NO TRADE"}"""
 
 # ─────────────────────────────────────────
 # OKX AUTH
@@ -78,11 +78,11 @@ def headers(method, path, body=""):
     h.update(DEMO_HDR)
     return h
 
-def get(path):
+def okx_get(path):
     r = requests.get(BASE_URL + path, headers=headers("GET", path), timeout=10)
     return r.json()
 
-def post(path, body):
+def okx_post(path, body):
     b = json.dumps(body)
     r = requests.post(BASE_URL + path, headers=headers("POST", path, b), data=b, timeout=10)
     return r.json()
@@ -141,39 +141,26 @@ def build_market_data(symbol):
 # ACCOUNT
 # ─────────────────────────────────────────
 def get_balance():
-    data = get("/api/v5/account/balance?ccy=USDT")
+    data = okx_get("/api/v5/account/balance?ccy=USDT")
     for d in data.get("data", [{}])[0].get("details", []):
         if d.get("ccy") == "USDT":
             return float(d.get("availEq", 0))
     return 0.0
 
 def get_position(symbol):
-    data = get(f"/api/v5/account/positions?instType=SWAP&instId={symbol}")
+    data = okx_get(f"/api/v5/account/positions?instType=SWAP&instId={symbol}")
     for p in data.get("data", []):
         if float(p.get("pos", 0)) != 0:
             return p
     return None
 
-def get_unrealized_pnl(symbol):
-    """Returns unrealized PnL in USDT for open position"""
-    pos = get_position(symbol)
-    if pos:
-        return float(pos.get("upl", 0))
-    return None
-
 def close_position(symbol, pos):
-    """Market close entire position"""
     pos_size = abs(float(pos.get("pos", 0)))
     pos_side = pos.get("posSide", "long")
     close_side = "sell" if pos_side == "long" else "buy"
-    result = post("/api/v5/trade/order", {
-        "instId": symbol,
-        "tdMode": "cross",
-        "side": close_side,
-        "posSide": pos_side,
-        "ordType": "market",
-        "sz": str(pos_size),
-        "reduceOnly": True,
+    result = okx_post("/api/v5/trade/order", {
+        "instId": symbol, "tdMode": "cross", "side": close_side,
+        "posSide": pos_side, "ordType": "market", "sz": str(pos_size), "reduceOnly": True,
     })
     log.info(f"Close result: {result}")
     return result.get("code") == "0"
@@ -187,73 +174,65 @@ def place_order(signal, balance):
     leverage = signal.get("leverage", 3)
     sl       = signal.get("stop_loss")
     entry    = signal.get("entry_zone")
-
-    if not all([symbol, decision, sl, entry]):
-        log.warning("Incomplete signal, skipping")
-        return False
-
+    if not all([symbol, decision, sl, entry]): return False
     entry, sl = float(entry), float(sl)
     sl_dist = abs(entry - sl)
-    if sl_dist == 0:
-        return False
-
+    if sl_dist == 0: return False
     risk_usdt = balance * (RISK_PCT / 100)
     contract_sz = 0.01 if "BTC" in symbol else 0.1
     contracts = max(1, round(risk_usdt / (sl_dist * contract_sz * leverage)))
-
-    side     = "buy" if decision == "LONG" else "sell"
+    side = "buy" if decision == "LONG" else "sell"
     pos_side = "long" if decision == "LONG" else "short"
-
-    post("/api/v5/account/set-leverage", {"instId": symbol, "lever": str(leverage), "mgnMode": "cross"})
-
-    result = post("/api/v5/trade/order", {
-        "instId": symbol, "tdMode": "cross",
-        "side": side, "posSide": pos_side,
-        "ordType": "market", "sz": str(contracts),
+    okx_post("/api/v5/account/set-leverage", {"instId": symbol, "lever": str(leverage), "mgnMode": "cross"})
+    result = okx_post("/api/v5/trade/order", {
+        "instId": symbol, "tdMode": "cross", "side": side,
+        "posSide": pos_side, "ordType": "market", "sz": str(contracts),
     })
     log.info(f"Order result: {result}")
     return result.get("code") == "0"
 
 # ─────────────────────────────────────────
-# DOLLAR PNL MONITOR — runs in background thread
+# PNL MONITOR
 # ─────────────────────────────────────────
 def pnl_monitor():
-    """
-    Monitors open positions every MONITOR_SEC seconds.
-    Closes position when:
-      - Unrealized PnL >= +TAKE_USD  →  TAKE PROFIT 💰
-      - Unrealized PnL <= -STOP_USD  →  STOP LOSS 🛑
-    """
-    log.info(f"💹 PnL monitor started | TP: +${TAKE_USD} | SL: -${STOP_USD} | check every {MONITOR_SEC}s")
-    total_taken = 0.0
-    take_count  = 0
-
+    log.info(f"💹 Monitor: TP=+${TAKE_USD} SL=-${STOP_USD} every {MONITOR_SEC}s")
     while True:
         try:
+            balance = get_balance()
+            state["balance"] = balance
+            positions_list = []
+            total_pnl = 0.0
+
             for symbol in SYMBOLS:
                 pos = get_position(symbol)
                 if not pos:
                     continue
-
                 pnl = float(pos.get("upl", 0))
-                pos_side = pos.get("posSide", "?")
-                log.info(f"📊 {symbol} [{pos_side}] unrealized PnL: ${pnl:+.2f}")
+                total_pnl += pnl
+                positions_list.append({
+                    "symbol": symbol,
+                    "side": pos.get("posSide"),
+                    "size": pos.get("pos"),
+                    "pnl": round(pnl, 2),
+                    "entry": pos.get("avgPx"),
+                })
+                log.info(f"📊 {symbol} PnL: ${pnl:+.2f}")
 
                 if pnl >= TAKE_USD:
-                    log.info(f"💰 TAKE PROFIT triggered! PnL ${pnl:.2f} >= ${TAKE_USD} — closing {symbol}")
+                    log.info(f"💰 TAKE PROFIT ${pnl:.2f} — closing")
                     if close_position(symbol, pos):
-                        total_taken += pnl
-                        take_count  += 1
-                        log.info(f"✅ Closed. Total taken: ${total_taken:.2f} ({take_count} times)")
-
+                        state["total_taken"] = round(state["total_taken"] + pnl, 2)
+                        state["take_count"] += 1
                 elif pnl <= -STOP_USD:
-                    log.info(f"🛑 STOP LOSS triggered! PnL ${pnl:.2f} <= -${STOP_USD} — closing {symbol}")
-                    if close_position(symbol, pos):
-                        log.info(f"❌ Stopped out. Total taken so far: ${total_taken:.2f}")
+                    log.info(f"🛑 STOP LOSS ${pnl:.2f} — closing")
+                    close_position(symbol, pos)
+
+            state["positions"] = positions_list
+            state["total_pnl"] = round(total_pnl, 2)
+            state["last_update"] = datetime.utcnow().strftime("%H:%M:%S UTC")
 
         except Exception as e:
             log.error(f"Monitor error: {e}")
-
         time.sleep(MONITOR_SEC)
 
 # ─────────────────────────────────────────
@@ -271,24 +250,17 @@ def analyze(market_data):
     return json.loads(text)
 
 # ─────────────────────────────────────────
-# MAIN LOOP
+# TRADE LOOP
 # ─────────────────────────────────────────
-def run():
-    mode = "DEMO" if IS_DEMO else "REAL"
-    log.info(f"🤖 JARVIS started | {mode} | interval:{INTERVAL_MIN}min | TP:+${TAKE_USD} | SL:-${STOP_USD}")
-
-    # Start PnL monitor in background
-    t = threading.Thread(target=pnl_monitor, daemon=True)
-    t.start()
-
+def trade_loop():
+    log.info(f"🤖 Trade loop | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
+    time.sleep(15)
     while True:
         try:
             log.info("=" * 60)
             log.info(f"⏱  Cycle: {datetime.utcnow().strftime('%H:%M UTC')}")
-
             balance = get_balance()
             log.info(f"💰 Balance: ${balance:,.2f} USDT")
-
             if balance < 10:
                 log.warning("Balance < $10, skipping")
             else:
@@ -298,23 +270,52 @@ def run():
                         log.info(f"📊 Position open for {symbol}, monitor handles it")
                         continue
                     market_block += build_market_data(symbol) + "\n\n"
-
                 if market_block.strip():
                     log.info("🧠 Analyzing with Claude...")
                     signal = analyze(market_block)
+                    state["last_signal"] = signal
                     log.info(f"📡 {signal.get('decision')} | {signal.get('final_verdict')} | {signal.get('reason','')}")
-
                     if signal.get("final_verdict") == "ENTER" and signal.get("decision") in ("LONG", "SHORT"):
                         log.info(f"✅ Placing {signal['decision']} on {signal.get('symbol')}")
                         place_order(signal, balance)
                     else:
                         log.info(f"⏸  {signal.get('final_verdict')} — skipping")
-
         except Exception as e:
             log.error(f"❌ {e}", exc_info=True)
-
         log.info(f"💤 Next analysis in {INTERVAL_MIN} min")
         time.sleep(INTERVAL_MIN * 60)
 
+# ─────────────────────────────────────────
+# FLASK API FOR DASHBOARD
+# ─────────────────────────────────────────
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/")
+def index():
+    return "JARVIS TRADE BOT is running 🤖"
+
+@app.route("/pnl")
+def pnl_endpoint():
+    return jsonify({
+        "balance": state["balance"],
+        "total_pnl": state["total_pnl"],
+        "positions": state["positions"],
+        "total_taken": state["total_taken"],
+        "take_count": state["take_count"],
+        "last_signal": state["last_signal"],
+        "last_update": state["last_update"],
+        "mode": "DEMO" if IS_DEMO else "REAL",
+        "take_usd": TAKE_USD,
+        "stop_usd": STOP_USD,
+    })
+
+# ─────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────
 if __name__ == "__main__":
-    run()
+    threading.Thread(target=pnl_monitor, daemon=True).start()
+    threading.Thread(target=trade_loop, daemon=True).start()
+    port = int(os.environ.get("PORT", 8080))
+    log.info(f"🌐 API running on port {port}")
+    app.run(host="0.0.0.0", port=port)
