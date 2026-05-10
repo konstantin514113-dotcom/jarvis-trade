@@ -391,6 +391,11 @@ CORS(app)
 def index():
     return DASHBOARD_HTML
 
+@app.route("/debug")
+def debug():
+    data = okx_get("/api/v5/account/balance")
+    return jsonify(data)
+
 @app.route("/pnl")
 def pnl_endpoint():
     return jsonify({
