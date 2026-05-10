@@ -1,30 +1,22 @@
-"""
-JARVIS TRADE BOT — Autonomous crypto trading agent for OKX
-Dollar-based Take Profit + Flask API for dashboard
-"""
-
 import os, time, hmac, hashlib, base64, json, logging, requests, threading
 from datetime import datetime, timezone
 from anthropic import Anthropic
 from flask import Flask, jsonify
 from flask_cors import CORS
 
-# CONFIG
-OKX_API_KEY     = os.environ["OKX_API_KEY"]
-OKX_SECRET_KEY  = os.environ["OKX_SECRET_KEY"]
-OKX_PASSPHRASE  = os.environ["OKX_PASSPHRASE"]
-ANTHROPIC_KEY   = os.environ["ANTHROPIC_API_KEY"]
-
-IS_DEMO         = os.environ.get("OKX_DEMO", "true").lower() == "true"
-RISK_PCT        = float(os.environ.get("RISK_PCT", "1.0"))
-INTERVAL_MIN    = int(os.environ.get("INTERVAL_MIN", "60"))
-TAKE_USD        = float(os.environ.get("TAKE_USD", "5.0"))
-STOP_USD        = float(os.environ.get("STOP_USD", "1.0"))
-MONITOR_SEC     = int(os.environ.get("MONITOR_SEC", "10"))
-SYMBOLS         = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
-
-BASE_URL    = "https://www.okx.com"
-DEMO_HDR    = {"x-simulated-trading": "1"} if IS_DEMO else {}
+OKX_API_KEY  = os.environ["OKX_API_KEY"]
+OKX_SECRET   = os.environ["OKX_SECRET_KEY"]
+OKX_PASS     = os.environ["OKX_PASSPHRASE"]
+ANT_KEY      = os.environ["ANTHROPIC_API_KEY"]
+IS_DEMO      = os.environ.get("OKX_DEMO", "true").lower() == "true"
+RISK_PCT     = float(os.environ.get("RISK_PCT", "1.0"))
+INTERVAL_MIN = int(os.environ.get("INTERVAL_MIN", "60"))
+TAKE_USD     = float(os.environ.get("TAKE_USD", "5.0"))
+STOP_USD     = float(os.environ.get("STOP_USD", "1.0"))
+MONITOR_SEC  = int(os.environ.get("MONITOR_SEC", "10"))
+SYMBOLS      = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
+BASE_URL     = "https://www.okx.com"
+DEMO_HDR     = {"x-simulated-trading": "1"} if IS_DEMO else {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,82 +35,80 @@ state = {
     "last_update": None,
 }
 
-SYSTEM_PROMPT = """Ty — institucionalnyj krypto-vejding analitik dlja OKX.
-Ishi tolko vysokoverojatnostnye intraday sdelki BTC/USDT i ETH/USDT.
-Princip: luchshe 10 raz NO TRADE, chem odin slabyjsignal.
-Analiziruj: market structure (BOS/CHoCH/HH/HL), liquidity sweep, order blocks, FVG,
+SYSTEM_PROMPT = """You are an institutional crypto trading analyst for OKX.
+Find only high-probability intraday trades for BTC/USDT and ETH/USDT.
+Principle: better 10 times NO TRADE than one weak signal.
+Analyze: market structure (BOS/CHoCH/HH/HL), liquidity sweep, order blocks, FVG,
 volume delta, CVD, OI, funding rate, long/short ratio, ATR, volatility regime.
-Signal TOLKO esli vse faktory sovpali: trend + obem + likvidnost + price action + RR >= 1:2.
-Otvechaj TOLKO validnym JSON bez markdown:
-{"decision":"LONG"|"SHORT"|"NO TRADE","symbol":"BTC-USDT-SWAP"|"ETH-USDT-SWAP"|null,"entry_zone":chislo|null,"stop_loss":chislo|null,"take_profit_1":chislo|null,"leverage":3,"confidence":"LOW"|"MEDIUM"|"HIGH","reason":"tekst","final_verdict":"ENTER"|"WAIT"|"NO TRADE"}"""
+Signal ONLY if all factors align: trend + volume + liquidity + price action + RR >= 1:2.
+Reply ONLY with valid JSON, no markdown:
+{"decision":"LONG or SHORT or NO TRADE","symbol":"BTC-USDT-SWAP or ETH-USDT-SWAP or null","entry_zone":number_or_null,"stop_loss":number_or_null,"take_profit_1":number_or_null,"leverage":3,"confidence":"LOW or MEDIUM or HIGH","reason":"brief reason in english","final_verdict":"ENTER or WAIT or NO TRADE"}"""
 
 def sign(ts, method, path, body=""):
     msg = ts + method.upper() + path + body
-    mac = hmac.new(OKX_SECRET_KEY.encode(), msg.encode(), hashlib.sha256)
+    mac = hmac.new(OKX_SECRET.encode(), msg.encode(), hashlib.sha256)
     return base64.b64encode(mac.digest()).decode()
 
-def headers(method, path, body=""):
+def get_headers(method, path, body=""):
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
     h = {
         "OK-ACCESS-KEY": OKX_API_KEY,
         "OK-ACCESS-SIGN": sign(ts, method, path, body),
         "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "OK-ACCESS-PASSPHRASE": OKX_PASS,
         "Content-Type": "application/json",
     }
     h.update(DEMO_HDR)
     return h
 
 def okx_get(path):
-    r = requests.get(BASE_URL + path, headers=headers("GET", path), timeout=10)
+    r = requests.get(BASE_URL + path, headers=get_headers("GET", path), timeout=10)
     return r.json()
 
 def okx_post(path, body):
     b = json.dumps(body)
-    r = requests.post(BASE_URL + path, headers=headers("POST", path, b), data=b, timeout=10)
+    r = requests.post(BASE_URL + path, headers=get_headers("POST", path, b), data=b, timeout=10)
     return r.json()
 
-def candles(symbol, bar="1H", limit=24):
+def get_candles(symbol, bar="1H", limit=24):
     r = requests.get(f"{BASE_URL}/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}", timeout=10)
     data = r.json().get("data", [])
     return [{"t": c[0], "o": float(c[1]), "h": float(c[2]), "l": float(c[3]), "c": float(c[4]), "v": float(c[5])}
             for c in reversed(data)]
 
-def ticker(symbol):
+def get_ticker(symbol):
     r = requests.get(f"{BASE_URL}/api/v5/market/ticker?instId={symbol}", timeout=10)
     t = r.json().get("data", [{}])[0]
     return {"last": float(t.get("last", 0)), "vol24h": float(t.get("vol24h", 0)),
             "high": float(t.get("high24h", 0)), "low": float(t.get("low24h", 0))}
 
-def funding(symbol):
+def get_funding(symbol):
     r = requests.get(f"{BASE_URL}/api/v5/public/funding-rate?instId={symbol}", timeout=10)
     d = r.json().get("data", [{}])[0]
     return float(d.get("fundingRate", 0))
 
-def build_market_data(symbol):
+def build_market(symbol):
     lines = [f"=== {symbol} | {datetime.utcnow().strftime('%H:%M UTC')} ==="]
     try:
-        t = ticker(symbol)
-        lines += [f"Price: ${t['last']:,.2f}", f"Vol24h: {t['vol24h']:,.0f}", f"H/L: {t['high']:,.2f} / {t['low']:,.2f}"]
+        t = get_ticker(symbol)
+        lines += [f"Price: ${t['last']:,.2f}", f"Vol24h: {t['vol24h']:,.0f}", f"H/L: {t['high']:,.2f}/{t['low']:,.2f}"]
     except: pass
     try:
-        fr = funding(symbol)
-        lines.append(f"Funding: {fr*100:.4f}%")
+        lines.append(f"Funding: {get_funding(symbol)*100:.4f}%")
     except: pass
     try:
-        c1h = candles(symbol, "1H", 24)
-        lines.append("1H (last 8):")
+        c1h = get_candles(symbol, "1H", 24)
+        lines.append("1H candles (last 8):")
         for c in c1h[-8:]:
             dt = datetime.fromtimestamp(int(c["t"])/1000, tz=timezone.utc).strftime("%H:%M")
             lines.append(f"  {dt} O:{c['o']:.1f} H:{c['h']:.1f} L:{c['l']:.1f} C:{c['c']:.1f} V:{c['v']:.0f}")
         closes = [c["c"] for c in c1h]
-        lines.append(f"  Trend1H: {'BULL' if closes[-1] > closes[0] else 'BEAR'}")
         atr = sum(c["h"] - c["l"] for c in c1h[-14:]) / 14
-        lines.append(f"  ATR14: {atr:.2f}")
+        lines.append(f"  Trend: {'BULL' if closes[-1] > closes[0] else 'BEAR'} | ATR14: {atr:.2f}")
     except: pass
     try:
-        c15 = candles(symbol, "15m", 16)
-        lines.append("15M (last 6):")
+        c15 = get_candles(symbol, "15m", 16)
+        lines.append("15M candles (last 6):")
         for c in c15[-6:]:
             dt = datetime.fromtimestamp(int(c["t"])/1000, tz=timezone.utc).strftime("%H:%M")
             lines.append(f"  {dt} O:{c['o']:.1f} H:{c['h']:.1f} L:{c['l']:.1f} C:{c['c']:.1f}")
@@ -147,15 +137,15 @@ def close_position(symbol, pos):
         "instId": symbol, "tdMode": "cross", "side": close_side,
         "posSide": pos_side, "ordType": "market", "sz": str(pos_size), "reduceOnly": True,
     })
-    log.info(f"Close result: {result}")
+    log.info(f"Close: {result}")
     return result.get("code") == "0"
 
 def place_order(signal, balance):
-    symbol   = signal.get("symbol")
+    symbol = signal.get("symbol")
     decision = signal.get("decision")
     leverage = signal.get("leverage", 3)
-    sl       = signal.get("stop_loss")
-    entry    = signal.get("entry_zone")
+    sl = signal.get("stop_loss")
+    entry = signal.get("entry_zone")
     if not all([symbol, decision, sl, entry]): return False
     entry, sl = float(entry), float(sl)
     sl_dist = abs(entry - sl)
@@ -170,11 +160,11 @@ def place_order(signal, balance):
         "instId": symbol, "tdMode": "cross", "side": side,
         "posSide": pos_side, "ordType": "market", "sz": str(contracts),
     })
-    log.info(f"Order result: {result}")
+    log.info(f"Order: {result}")
     return result.get("code") == "0"
 
 def pnl_monitor():
-    log.info(f"PnL monitor started | TP=+${TAKE_USD} | SL=-${STOP_USD} | every {MONITOR_SEC}s")
+    log.info(f"Monitor started | TP=+${TAKE_USD} | SL=-${STOP_USD} | every {MONITOR_SEC}s")
     while True:
         try:
             balance = get_balance()
@@ -183,8 +173,7 @@ def pnl_monitor():
             total_pnl = 0.0
             for symbol in SYMBOLS:
                 pos = get_position(symbol)
-                if not pos:
-                    continue
+                if not pos: continue
                 pnl = float(pos.get("upl", 0))
                 total_pnl += pnl
                 positions_list.append({
@@ -196,12 +185,12 @@ def pnl_monitor():
                 })
                 log.info(f"{symbol} PnL: ${pnl:+.2f}")
                 if pnl >= TAKE_USD:
-                    log.info(f"TAKE PROFIT ${pnl:.2f} closing")
+                    log.info(f"TAKE PROFIT ${pnl:.2f} - closing")
                     if close_position(symbol, pos):
                         state["total_taken"] = round(state["total_taken"] + pnl, 2)
                         state["take_count"] += 1
                 elif pnl <= -STOP_USD:
-                    log.info(f"STOP LOSS ${pnl:.2f} closing")
+                    log.info(f"STOP LOSS ${pnl:.2f} - closing")
                     close_position(symbol, pos)
             state["positions"] = positions_list
             state["total_pnl"] = round(total_pnl, 2)
@@ -211,7 +200,7 @@ def pnl_monitor():
         time.sleep(MONITOR_SEC)
 
 def analyze(market_data):
-    client = Anthropic(api_key=ANTHROPIC_KEY)
+    client = Anthropic(api_key=ANT_KEY)
     msg = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=1000,
@@ -222,7 +211,7 @@ def analyze(market_data):
     return json.loads(text)
 
 def trade_loop():
-    log.info(f"Trade loop started | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
+    log.info(f"Trade loop | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
     time.sleep(15)
     while True:
         try:
@@ -236,9 +225,9 @@ def trade_loop():
                 market_block = ""
                 for symbol in SYMBOLS:
                     if get_position(symbol):
-                        log.info(f"Position open for {symbol}, monitor handles it")
+                        log.info(f"Position open for {symbol}")
                         continue
-                    market_block += build_market_data(symbol) + "\n\n"
+                    market_block += build_market(symbol) + "\n\n"
                 if market_block.strip():
                     log.info("Analyzing with Claude...")
                     signal = analyze(market_block)
@@ -251,7 +240,7 @@ def trade_loop():
                         log.info(f"{signal.get('final_verdict')} - skipping")
         except Exception as e:
             log.error(f"Error: {e}", exc_info=True)
-        log.info(f"Next analysis in {INTERVAL_MIN} min")
+        log.info(f"Next in {INTERVAL_MIN} min")
         time.sleep(INTERVAL_MIN * 60)
 
 app = Flask(__name__)
@@ -280,5 +269,5 @@ if __name__ == "__main__":
     threading.Thread(target=pnl_monitor, daemon=True).start()
     threading.Thread(target=trade_loop, daemon=True).start()
     port = int(os.environ.get("PORT", 8080))
-    log.info(f"API running on port {port}")
+    log.info(f"API on port {port}")
     app.run(host="0.0.0.0", port=port)
