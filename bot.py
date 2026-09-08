@@ -14,6 +14,7 @@ INTERVAL_MIN = int(os.environ.get("INTERVAL_MIN", "15"))
 TAKE_USD     = float(os.environ.get("TAKE_USD", "5.0"))
 STOP_USD     = float(os.environ.get("STOP_USD", "1.0"))
 MONITOR_SEC  = int(os.environ.get("MONITOR_SEC", "10"))
+TRADING_ENABLED = os.environ.get("TRADING_ENABLED", "true").lower() == "true"
 SYMBOLS      = ["BTC-USDT-SWAP", "ETH-USDT-SWAP"]
 BASE_URL     = "https://www.okx.com"
 DEMO_HDR     = {"x-simulated-trading": "1"} if IS_DEMO else {}
@@ -352,10 +353,14 @@ def analyze(market_data):
     return json.loads(text)
 
 def trade_loop():
-    log.info(f"Trade loop | Demo={IS_DEMO} | interval={INTERVAL_MIN}min")
+    log.info(f"Trade loop | Demo={IS_DEMO} | interval={INTERVAL_MIN}min | TRADING_ENABLED={TRADING_ENABLED}")
     time.sleep(15)
     while True:
         try:
+            if not TRADING_ENABLED:
+                log.info("Trading disabled (TRADING_ENABLED=false) — skipping cycle")
+                time.sleep(INTERVAL_MIN * 60)
+                continue
             log.info("=" * 40)
             log.info(f"Cycle: {datetime.utcnow().strftime('%H:%M UTC')}")
             balance = get_balance()
